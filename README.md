@@ -1,35 +1,42 @@
-# ARTEMIS II: LUNAR ODYSSEY — Nicolas / Mission Director v3.0
+# ARTEMIS II: LUNAR ODYSSEY — Nicolas / Mission Director v3.1
 
-**Language:** American English (`en-US`) · **Team role:** Child 1 — Mission Director.
+**Official game language:** American English (`en-US`)  
+**Scope:** Child 1 (Nicolas): Mission Briefing, Phase 1 operational sequence, five-system readiness/checklist, launch clearance, guided departure-burn user interaction, Phase 1 handoff, and final mission debriefing UI.  
+**Repository:** `angelohafner/nicolas_hackathon_2026`
 
-The main offline deliverable is [index.html](index.html). Open it in Chrome or Edge. No network, CDN, npm installation or external images are required. Audio uses locally available en-US browser voices; captions remain available if no voice exists.
+## Run the standalone educational demonstration
 
-## Phase 1 sequence
+Open [**index.html**](index.html) directly in Chrome or Edge. Internet access and third-party scripts are not required for visuals, controls, rules or captions. English voice narration uses the browser's installed `speechSynthesis` voices; captions work even without an available voice. The game is **not official NASA software**.
 
-1. **MISSION BRIEFING:** Explore the three phases, four resource rules and Flight Director Tips.
-2. **ASSEMBLY (demo adapter):** Choose tank, solar panels, shield, antenna and camera; inspect live mass, budget, solar generation, net power, current/capacity battery (Wh), buffer (MB), shield and maneuver Δv (m/s).
-3. **PRE-LAUNCH DIAGNOSTICS:** Run five sequential GREEN/YELLOW/RED checks. Authorization requires **at least 4 GREEN, zero critical RED, all five mandatory components, budget within limit, eclipse-survival battery energy and post-burn Δv reserve**. Every YELLOW and noncritical RED requires explicit **ACKNOWLEDGE RISK**.
-4. **AUTHORIZE LAUNCH:** Spoken Mission Control clearance and abortable ten-second countdown.
-5. **GUIDED DEPARTURE BURN:** Confirm the target maneuver and execute. The engineering engine commits exactly one delta-v debit and logs the decision.
-6. **PHASE 1 HANDOFF:** Confirm completion only after the burn. Export the complete campaign state for Phase 2. A clearly labeled simulated Phase 2/3 demonstration remains available independently.
+1. Study the **Mission Briefing**, three mission phases, four educational resources, and optionally enable **Flight Director Tips**.
+2. Select a tank, solar arrays, thermal shield, antenna and science camera in **Assembly**. The selectors and schematic are deliberately **demo placeholders** for the engineering catalog (Child 2) and true 3D spacecraft (Child 4); their values are not official NASA hardware data.
+3. Monitor mass, budget, net power, current battery in Wh versus capacity in Wh, buffer occupancy and maneuver reserve Δv in m/s.
+4. Run **RUN PRE-LAUNCH DIAGNOSTICS**. Five checks run sequentially with aligned captions, optional speech and GREEN/YELLOW/RED indicators. The game requires **at least 4/5 GREEN, no critical RED, all mandatory parts, budget ≤ limit, mass ≤ 26,500 kg, adequate eclipse energy and adequate post-burn maneuver reserve**. Yellow and noncritical RED findings require explicit **ACKNOWLEDGE RISK**.
+5. After authorization and a narrated ten-second countdown, the player **must still execute the guided departure burn**. A valid burn command is committed exactly once by the engine; the reserve immediately decreases.
+6. Confirm **PHASE 1 COMPLETE**. The UI exports the **full Phase 2 handoff JSON** and preserves the configured components, remaining budget, battery current/capacity, shield integrity, buffer data, telemetry, history and maneuver reserve. A simplified Phase 2/3 **demo only** can continue from that point while teammates build the real phases.
+7. After a complete team campaign, Nicolas's **Mission Debriefing** displays crew safety, science, medals, decisions and an educational comparison to the real Artemis II.
 
-**Mass rule:** 26,500 kg is the **single fixed game ceiling**. A 15% margin must not be deducted again.
+> **Mass-rule interpretation:** 26,500 kg is the **single game hard ceiling**. Do not subtract another 15%. The previous optional 15% margin is not an additional authorization rule.
+>
+> **CML 4:** NASA's real term refers to *Concept Maturity Level 4 — Point Design*; the game uses the label only as an educational flight-director adaptation. Game mass, budget, eclipse consumption, Δv and entry thresholds are simplified game assumptions.
 
-**CML 4 disclaimer:** NASA's real *Concept Maturity Level 4 — Point Design* is **not** an operational launch checklist. All game parameters are illustrative, not official NASA technical limits.
+## Architecture and ownership
 
-## Source and integration
+- **Nicolas (Child 1):** phases/briefings, readiness presentation, risk acknowledgement, launch authorization/voice, departure guidance and final results UI.
+- **Child 2:** canonical mission state, component catalog, physics/resource calculations, official readiness, departure-burn preview/commit, idempotent resource updates and phase-completion event.
+- **Child 4:** actual component selector and dynamic Orion 3D spacecraft/HUD.
+- **Child 3:** initial Earth–Moon environment and trajectory plus the Phase 2 lunar flight scene.
+- **Child 5:** Phase 3 approach, reentry and landing interactions.
 
-- `standalone/phase1-v3.js` — Child 1 UI/orchestration plus clearly labeled mock Child 2 engine.
-- `standalone/phase1-v3.css` — Phase 1 interface styling.
-- `standalone/offline-enhancement.js` — existing voice, diagnostic and final debrief layers.
-- `tools/build_standalone.py` — offline HTML builder.
-- `docs/PHASE1_TEAM_CONTRACT_EN_US.md` — shared mission-state and Child 2 methods.
-- `docs/PHASE1_IMPLEMENTATION_REPORT_EN_US.md` — test results and remaining integration dependencies.
-- `src/` — **older React/TypeScript scaffold, not yet feature-equivalent to HTML v3**; do not deploy it instead of `index.html`.
+**The integrated UI must not subtract Δv or recompute authoritative resource values.** In DEMO mode, a mock engine located in [`standalone/phase1-v3.js`](standalone/phase1-v3.js) implements the same transaction contract to make Nicolas's independent module testable.
 
-In team mode, `window.ArtemisNicolasPhase1.connectEngine(engine)` connects the **single official Child 2 state**. Child 4 owns real 3D assembly, Child 3 owns Earth/Moon scene and Phase 2, and Child 5 owns reentry and splashdown. Nicolas owns flight instructions, readiness UI, approvals, guided-burn interface, handoff and final report. Do not duplicate their physics or events.
+### Integrate the real Child 2 rules engine
 
-## Rebuild and verify
+See [**PHASE1_TEAM_CONTRACT_EN_US.md**](docs/PHASE1_TEAM_CONTRACT_EN_US.md) for the complete state schema and `window.ArtemisNicolasPhase1.connectEngine(engine)` API. The existing `window.ArtemisNicolas` methods remain for the earlier briefing/debriefing interface.
+
+The current **React/TypeScript files in `src/` are an older scaffolding** and do not yet reproduce the v3 HTML, narrated diagnostics or burn. The authoritative deliverable for Nicolas's part is the **standalone `index.html`**. The next team-integration sprint must port the UI, not silently substitute the older React build.
+
+## Rebuild and test
 
 ```bash
 python tools/build_standalone.py
@@ -38,10 +45,24 @@ npm run test:browser
 npm run test:cautions
 npm run test:integration
 npm run test:narration
+npm run test:audit
+npm run test:responsive
 ```
 
-Install Playwright and a Chromium browser for the Python tests. The browser suites use `page.set_content` to avoid sandboxes that prohibit local `file://` navigation. Acoustic voice quality must be tested on the competition computer.
+Install Playwright and Chromium if necessary: `python -m pip install playwright` and `python -m playwright install chromium`. Browser tests are designed to load the HTML using `page.set_content()` to avoid sandbox restrictions on local `file://` navigation.
 
-## Historical and game boundaries
+The earlier v2.1 tests remain in the repository as historical reference, but `test:browser` now targets the v3 Phase 1 workflow. See [**PHASE1_IMPLEMENTATION_REPORT_EN_US.md**](docs/PHASE1_IMPLEMENTATION_REPORT_EN_US.md).
 
-This is an educational experience, **not a NASA product**. Flight phases 2 and 3 remain demo stubs until teammates integrate their official modules. A pre-rendered spacecraft illustration is **not the Child 4 Three.js spacecraft**; the background is not a real WebGL orbital scene. Artemis II was a crewed lunar flyby without a Moon landing. [NASA mission page](https://www.nasa.gov/mission/artemis-ii/).
+## Scope exclusions
+
+No solar-storm event, lunar exploration, actual 3D orbital physics, service-module separation, reentry minigame or parachute deployment was added to Nicolas's Phase 1. The offline Phase 2/3 **demo** is labeled separately and is not part of the other children's final deliverables.
+
+Historical reference: [NASA Artemis II](https://www.nasa.gov/mission/artemis-ii/).
+
+## Independent Phase 1 audit — v3.1
+
+The [Phase 1 compliance audit](docs/FINAL_AUDIT_PHASE1_EN_US.md) checks every assigned Nicolas requirement, the revised Phase 1 completion gates, state continuity, narration/visual event order, and unsafe API paths.
+
+Corrections include engine-side departure authorization, idempotent burn protection, liftoff recording, prohibition of post-burn demo resource edits, consistent fixed mass ceiling wording, canonical external engine state validation, and speech/visual synchronization for the maneuver. The navigation no longer duplicates step numbers.
+
+**Status:** The self-contained Nicolas module is complete as an **offline demonstration**. The official Child 2 engine, Child 4 3D spacecraft, Child 3 trajectory/Phase 2, and Child 5 Phase 3 outcome still require integration. The legacy React scaffold under `src/` is not at parity and should not be used as the competition executable.

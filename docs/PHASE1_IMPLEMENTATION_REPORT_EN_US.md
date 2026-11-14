@@ -1,4 +1,4 @@
-# Phase 1 v3.0 — Implementation & Audit
+# Phase 1 v3.1 — Implementation & Audit
 
 Version: 3.0 · Official language: en-US · Owner: Nicolas (Child 1)
 
@@ -27,3 +27,12 @@ Version: 3.0 · Official language: en-US · Owner: Nicolas (Child 1)
 - Automated voice tests inspect synchronization using a simulated voice; real en-US audio, timing and volume must be checked on the competition PC.
 
 To rebuild: `python tools/build_standalone.py`. To test: `npm run test:offline`, `npm run test:browser`, `npm run test:cautions`, `npm run test:integration`, `npm run test:narration`.
+
+
+## Independent v3.1 audit and remediation
+
+The independent audit found and corrected: engine-side departure authorization bypass, stale approval after assembly/resource changes, direct post-burn resource editing, mid-flight engine replacement, loose external engine value validation, outdated advice suggesting a second 15% mass discount, burn animation delayed until after its narration, and repeated navigation numbers.
+
+Additional browser audits covered 18 targeted regressions and 9 viewport/screen overflow checks. Together with the existing 10 offline, 37 Phase 1, 13 caution, 7 adapter and 46 narration assertions, **140 checks passed in the development environment**. Automated speech tests use controlled callbacks and do not certify actual acoustic quality.
+
+See FINAL_AUDIT_PHASE1_EN_US.md for the detailed coverage and remaining integration dependencies.

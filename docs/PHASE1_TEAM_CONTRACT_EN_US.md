@@ -59,3 +59,17 @@ Optional: `onPhase1Complete(state)`, `setLearningMode(bool)`, `resetCampaign()`.
 After Phase 3, call `window.ArtemisNicolas.setMissionResult({phaseIndex:3,ship,history})` with three ordered phase summary records. Phase 1 record must agree with the committed burn receipt. The final report is derived from actual official mission outcomes and separates game metrics from real NASA historical facts.
 
 English speech captions follow the active visual scene. The diagnostic row appears before its spoken check; countdown digits do not advance until utterance completion (or caption-only fallback); the burn's final result is narrated after its visual display. Real audio quality requires manual testing.
+
+
+## Independent v3.1 audit safeguards
+
+- The five-system demo checklist, any yellow/noncritical-red acknowledgements and all hard gates are revalidated by the engineering adapter when approval is recorded, not only by the HTML button state.
+- A configuration/resources fingerprint ties approval to the exact inspected spacecraft. Changing a component or engineering snapshot revokes that approval.
+- A completed terminal countdown is recorded as liftoff before a demo departure burn can be committed. The Child 2 engine should enforce this same rule independently; it may expose an optional recordLiftoff({actionId}) callback.
+- The departure burn is idempotent: the debit occurs once, and Phase 1 completion checks the receipt and the remaining minimum reserve.
+- Direct demo state changes and replacing the engine are blocked after the relevant launch milestones.
+- Canonical external snapshots reject invalid battery/buffer quantities, inconsistent budgets/science counters, duplicate departure events and out-of-order phase progression.
+- In connected team mode the final report requires recorded Phase 3 completion and final resources/safety matching the official state.
+- Narration, caption and visual burn progress are synchronized; visual progress starts during spoken maneuver guidance, while completion waits for both presentation and utterance completion.
+
+The checks protect the educational interface; official mission physics, 3D assembly, lunar events and reentry remain the responsibilities of the other children.

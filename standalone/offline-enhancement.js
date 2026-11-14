@@ -23,7 +23,7 @@
     ['debrief', 'DEBRIEF']
   );
   const englishResources = [
-    ['Spacecraft mass', 'A 15% design margin is a simplified game assumption, not a NASA SLS specification.'],
+    ['Spacecraft mass', 'The fixed maximum spacecraft mass in this game is 26,500 kg. Do not subtract another safety margin.'],
     ['Power and battery', 'Solar arrays generate energy in sunlight, while batteries support the spacecraft through eclipses.'],
     ['Thermal protection', 'The heat shield helps protect the Orion crew module during atmospheric reentry.'],
     ['Communications', 'The Moon can block direct line-of-sight radio communication with Earth. The spacecraft stores data until contact returns.'],
@@ -65,7 +65,7 @@
     {
       code: 'MASS', title: 'Mass vs. SLS', iconKey: 'gauge', tone: 'cyan',
       short: 'Keep the spacecraft inside the mass budget.',
-      details: 'Extra equipment adds mass. In this game, a 15% design margin is encouraged to avoid the yellow caution zone.',
+      details: 'Extra equipment adds mass. The single fixed game mass ceiling is 26,500 kg; no additional 15% deduction applies.',
       target: `Game limit: ${fmt(MASS_LIMIT)} kg · Green below ${fmt(MASS_GREEN)} kg`
     },
     {
@@ -437,7 +437,7 @@
     ];
     const descriptions = [
       mass === 'red' ? 'Vehicle mass exceeds the game limit.' : mass === 'yellow' ?
-        'Within the game limit, but the recommended safety margin is not met.' : 'Mass is within the game limit and recommended 15% margin.',
+        'Within the 26,500 kg game ceiling; review other mission resource limits.' : 'Mass is within the single fixed 26,500 kg game ceiling.',
       energy === 'red' ? 'Launch blocked: battery is depleted or net electrical power is not positive.' : energy === 'yellow' ?
         'Battery reserve is low; recharge before launch for a stronger safety margin.' : 'Battery is charged and electrical generation exceeds demand.',
       shield === 'red' ? 'The heat shield is missing or unusable.' : shield === 'yellow' ?
@@ -578,7 +578,7 @@
       </section>
       <aside class="glass-panel hangar-aside"><div class="panel-heading"><span class="panel-heading-icon">${icon('activity',19)}</span><div><h2>CML 4 preview</h2><p>Live engineering values — not yet launch authorization.</p></div></div>
       <div id="hangar-preview">${preview()}</div>
-      ${tip('What does the mass margin mean?', `This game assumes a maximum of ${fmt(MASS_LIMIT)} kg and a recommended 15% margin. These are not official SLS mass limits.`)}
+      ${tip('What is the game mass ceiling?', `The fixed game maximum is ${fmt(MASS_LIMIT)} kg, with no second 15% deduction. This is not an official NASA SLS mass limit.`)}
       <div class="preview-next">${icon('info',15)} The next screen will run five sequential tests before any launch can be approved.</div>
       </aside></div>
       <div class="flow-actions"><button class="button button--text" data-action="to-briefing">${icon('back',17)} BACK TO BRIEFING</button>

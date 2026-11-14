@@ -456,7 +456,7 @@ initStars();render();
     ['debrief', 'DEBRIEF']
   );
   const englishResources = [
-    ['Spacecraft mass', 'A 15% design margin is a simplified game assumption, not a NASA SLS specification.'],
+    ['Spacecraft mass', 'The fixed maximum spacecraft mass in this game is 26,500 kg. Do not subtract another safety margin.'],
     ['Power and battery', 'Solar arrays generate energy in sunlight, while batteries support the spacecraft through eclipses.'],
     ['Thermal protection', 'The heat shield helps protect the Orion crew module during atmospheric reentry.'],
     ['Communications', 'The Moon can block direct line-of-sight radio communication with Earth. The spacecraft stores data until contact returns.'],
@@ -498,7 +498,7 @@ initStars();render();
     {
       code: 'MASS', title: 'Mass vs. SLS', iconKey: 'gauge', tone: 'cyan',
       short: 'Keep the spacecraft inside the mass budget.',
-      details: 'Extra equipment adds mass. In this game, a 15% design margin is encouraged to avoid the yellow caution zone.',
+      details: 'Extra equipment adds mass. The single fixed game mass ceiling is 26,500 kg; no additional 15% deduction applies.',
       target: `Game limit: ${fmt(MASS_LIMIT)} kg · Green below ${fmt(MASS_GREEN)} kg`
     },
     {
@@ -870,7 +870,7 @@ initStars();render();
     ];
     const descriptions = [
       mass === 'red' ? 'Vehicle mass exceeds the game limit.' : mass === 'yellow' ?
-        'Within the game limit, but the recommended safety margin is not met.' : 'Mass is within the game limit and recommended 15% margin.',
+        'Within the 26,500 kg game ceiling; review other mission resource limits.' : 'Mass is within the single fixed 26,500 kg game ceiling.',
       energy === 'red' ? 'Launch blocked: battery is depleted or net electrical power is not positive.' : energy === 'yellow' ?
         'Battery reserve is low; recharge before launch for a stronger safety margin.' : 'Battery is charged and electrical generation exceeds demand.',
       shield === 'red' ? 'The heat shield is missing or unusable.' : shield === 'yellow' ?
@@ -1011,7 +1011,7 @@ initStars();render();
       </section>
       <aside class="glass-panel hangar-aside"><div class="panel-heading"><span class="panel-heading-icon">${icon('activity',19)}</span><div><h2>CML 4 preview</h2><p>Live engineering values — not yet launch authorization.</p></div></div>
       <div id="hangar-preview">${preview()}</div>
-      ${tip('What does the mass margin mean?', `This game assumes a maximum of ${fmt(MASS_LIMIT)} kg and a recommended 15% margin. These are not official SLS mass limits.`)}
+      ${tip('What is the game mass ceiling?', `The fixed game maximum is ${fmt(MASS_LIMIT)} kg, with no second 15% deduction. This is not an official NASA SLS mass limit.`)}
       <div class="preview-next">${icon('info',15)} The next screen will run five sequential tests before any launch can be approved.</div>
       </aside></div>
       <div class="flow-actions"><button class="button button--text" data-action="to-briefing">${icon('back',17)} BACK TO BRIEFING</button>
@@ -1552,6 +1552,33 @@ initStars();render();
     minimumNextPhaseDeltaVMps:1700
   });
   function findPart(slot,id) { return parts[slot]?.find(item=>item.id===id); }
+  // Record the exact engineering state authorized by the Flight Director.
+  // An assembly/resource change cannot reuse that authorization for a new burn.
+  function approvalFingerprint(m) {
+    return JSON.stringify([m.configuration.parts,m.engineering,m.resources,m.safety]);
+  }
+  function authoritativeDemoChecklist(m) {
+    const e=m.engineering,r=m.resources,s=m.safety;
+    const eclipseRequired=e.eclipseDurationHours*e.eclipseLoadWatts+e.postEclipseReserveWh;
+    const after=r.maneuverReserveMps-e.departureBurnTargetMps;
+    const items=[
+      {id:'mass',critical:true,status:e.totalMassKg>e.maxMassKg?'red':'green'},
+      {id:'energy',critical:true,status:r.batteryCurrentWh<eclipseRequired||e.netPowerWatts<=0?'red':r.batteryCurrentWh<eclipseRequired*1.15?'yellow':'green'},
+      {id:'shield',critical:true,status:!s.heatShieldInstalled||r.shieldHealthPercent<=0?'red':r.shieldHealthPercent<60?'yellow':'green'},
+      {id:'antenna',critical:false,status:s.antennaActive?'green':'red'},
+      {id:'fuel',critical:true,status:after<e.minimumNextPhaseDeltaVMps?'red':after<e.minimumNextPhaseDeltaVMps+200?'yellow':'green'}
+    ];
+    const greens=items.filter(item=>item.status==='green').length;
+    const criticalReds=items.filter(item=>item.critical&&item.status==='red').length;
+    return {items,greens,criticalReds,approved:greens>=4&&criticalReds===0&&evaluateV3(m).eligible};
+  }
+  function revokeDemoApproval(m,why) {
+    if(m.launchApproval){
+      m.history.push({id:`revoke-${m.history.length+1}`,phase:1,type:'approval-revoked',description:why});
+      m.launchApproval=null;
+      m.liftoffConfirmed=false;
+    }
+  }
   class DemoPhase1Engine {
     constructor() {
       this.state = {
@@ -1564,7 +1591,7 @@ initStars();render();
           scienceCollectedMb:0,scienceTransmittedMb:0,scienceLostMb:0},
         safety:{crewSafe:true,essentialSystemsWorking:true},
         environment:{sunlit:true,communicationAvailable:true},
-        history:[],completedPhases:[],departureReceipt:null
+        history:[],completedPhases:[],departureReceipt:null,launchApproval:null,liftoffConfirmed:false
       };
       this.calculate();
     }
@@ -1590,6 +1617,7 @@ initStars();render();
       if(this.state.departureReceipt)throw new Error('Spacecraft components cannot be changed after departure.');
       if(!mandatorySlots.includes(slot)||!findPart(slot,id))throw new TypeError('Unknown spacecraft component.');
       const previous=this.state.configuration.parts[slot];
+      if(previous!==id)revokeDemoApproval(this.state,'Approved configuration was changed; a fresh checklist is required.');
       this.state.configuration.parts[slot]=id;
       if(previous!==id)this.state.history.push({id:`component-${this.state.history.length+1}`,phase:1,type:'configuration-choice',slot,from:previous,to:id,description:`Changed ${slot} from ${previous} to ${id}.`});
       this.state.step='assembly';
@@ -1597,6 +1625,7 @@ initStars();render();
     }
     simulateFault(kind){
       if(this.state.departureReceipt)throw new Error('Cannot inject a fault after departure.');
+      if(kind!=='reset')revokeDemoApproval(this.state,'Engineering data changed after the previous approval.');
       if(kind==='energy')this.state.resources.batteryCurrentWh=160;
       if(kind==='caution')this.state.resources.batteryCurrentWh=950;
       if(kind==='budget')this.state.engineering.budgetUsd=6800000;
@@ -1605,12 +1634,33 @@ initStars();render();
     }
     evaluateConfiguration(){return evaluateV3(this.state);}
     recordChecklistApproval({id,checklist,acknowledged}){
-      if(!checklist.approved)throw new Error('Checklist approval does not meet Phase 1 requirements.');
-      if(!this.state.history.some(event=>event.type==='checklist-approved')){
-        this.state.history.push({id,phase:1,type:'checklist-approved',description:'Five-system readiness approved by Flight Director.',
-          greenCount:checklist.greens,criticalRedCount:checklist.criticalReds,acknowledged:clone(acknowledged)});
-      }
+      if(this.state.phase!==1||this.state.departureReceipt)throw new Error('Phase 1 authorization is no longer available.');
+      const current=authoritativeDemoChecklist(this.state);
+      if(!current.approved||!checklist?.approved||!Array.isArray(checklist.items)||checklist.items.length!==5)
+        throw new Error('Checklist approval does not meet current Phase 1 requirements.');
+      const matched=current.items.every((item,index)=>checklist.items[index]?.id===item.id&&
+        checklist.items[index]?.status===item.status&&checklist.items[index]?.critical===item.critical);
+      if(!matched||current.greens!==checklist.greens||current.criticalReds!==checklist.criticalReds)
+        throw new Error('Checklist results changed; run a new diagnostic scan.');
+      const cautions=current.items.filter(item=>item.status==='yellow'||(item.status==='red'&&!item.critical));
+      if(cautions.some(item=>acknowledged?.[item.id]!==true))
+        throw new Error('Every yellow or noncritical-red finding must be acknowledged.');
+      const fingerprint=approvalFingerprint(this.state);
+      if(this.state.launchApproval?.fingerprint===fingerprint)return this.getState();
+      this.state.launchApproval={id,fingerprint,acknowledged:clone(acknowledged||{}),greenCount:current.greens};
+      this.state.history.push({id:`${id}-${this.state.history.length+1}`,phase:1,type:'checklist-approved',description:'Five-system readiness approved by Flight Director.',
+        greenCount:current.greens,criticalRedCount:current.criticalReds,acknowledged:clone(acknowledged||{})});
       this.state.step='authorized';return this.getState();
+    }
+    confirmLiftoff(){
+      if(this.state.liftoffConfirmed)return this.getState();
+      if(this.state.phase!==1||!this.state.launchApproval||
+          this.state.launchApproval.fingerprint!==approvalFingerprint(this.state)||this.state.step!=='authorized')
+        throw new Error('Liftoff requires a current Flight Director approval.');
+      this.state.liftoffConfirmed=true;
+      this.state.step='departure-ready';
+      this.state.history.push({id:`liftoff-${this.state.history.length+1}`,phase:1,type:'liftoff',description:'Terminal countdown completed and liftoff confirmed.'});
+      return this.getState();
     }
     previewDepartureBurn(action){return previewBurn(this.state,action);}
     commitDepartureBurn(action){
@@ -1618,6 +1668,9 @@ initStars();render();
         if(this.state.departureReceipt.actionId===action.actionId)return this.getState();
         throw new Error('The departure burn has already been applied.');
       }
+      if(this.state.phase!==1||!this.state.liftoffConfirmed||this.state.step!=='departure-ready'||
+         !this.state.launchApproval||this.state.launchApproval.fingerprint!==approvalFingerprint(this.state))
+        throw new Error('Departure burn requires liftoff and a current approved checklist.');
       const check=previewBurn(this.state,action);
       if(!check.allowed)throw new Error(check.reason);
       const before=this.state.resources.maneuverReserveMps;
@@ -1633,8 +1686,15 @@ initStars();render();
       return this.getState();
     }
     completePhase1(action){
-      if(!this.state.departureReceipt)throw new Error('Departure burn has not been completed.');
-      if(!this.state.history.some(event=>event.type==='checklist-approved'))throw new Error('Checklist authorization is missing.');
+      if(this.state.phase===2&&this.state.completedPhases.includes(1))return this.getState();
+      if(this.state.phase!==1||!this.state.departureReceipt||this.state.step!=='burn-complete')
+        throw new Error('The guided departure burn must finish before Phase 1 completion.');
+      if(!this.state.liftoffConfirmed||!this.state.launchApproval||
+         !this.state.history.some(event=>event.type==='checklist-approved'))
+        throw new Error('A complete Flight Director clearance and liftoff record are required.');
+      if(!evaluateV3(this.state).eligible||
+         this.state.resources.maneuverReserveMps<this.state.engineering.minimumNextPhaseDeltaVMps)
+        throw new Error('Mission resource gates must remain valid after the departure burn.');
       if(!this.state.completedPhases.includes(1)){
         this.state.completedPhases.push(1);
         this.state.history.push({id:action.actionId,phase:1,type:'phase-complete',
@@ -1669,11 +1729,15 @@ initStars();render();
     if(!Number.isFinite(burn)||burn<=0)return {allowed:false,reason:'Burn must be a positive finite delta-v.'};
     const remaining=r.maneuverReserveMps-burn;
     const onTarget=Math.abs(burn-e.departureBurnTargetMps)<=e.departureToleranceMps;
-    const eligible=onTarget&&remaining>=e.minimumNextPhaseDeltaVMps&&evaluateV3(m).eligible;
+    const eligible=onTarget&&remaining>=e.minimumNextPhaseDeltaVMps&&evaluateV3(m).eligible&&
+      m.phase===1&&!m.departureReceipt&&m.liftoffConfirmed&&m.step==='departure-ready'&&
+      m.launchApproval?.fingerprint===approvalFingerprint(m);
     return {allowed:eligible,requestedDeltaVMps:burn,afterDeltaVMps:remaining,
       reason:!onTarget?'Align the guided burn with the target corridor.':
         remaining<e.minimumNextPhaseDeltaVMps?'Insufficient reserve for the lunar mission.':
-        !evaluateV3(m).eligible?'Phase 1 safety gates are not satisfied.':'Burn is within the educational target corridor.'};
+        !evaluateV3(m).eligible?'Phase 1 safety gates are not satisfied.':
+        !m.liftoffConfirmed||m.step!=='departure-ready'?'Flight Director clearance and liftoff are required before the burn.':
+        m.launchApproval?.fingerprint!==approvalFingerprint(m)?'Spacecraft data changed after authorization.':'Burn is within the educational target corridor.'};
   }
 
   const demoEngine=new DemoPhase1Engine();
@@ -1685,8 +1749,59 @@ initStars();render();
   state.v3=v3;
   function engineSnapshot(){
     const snapshot=v3.engine.getState();
-    if(!snapshot || !snapshot.configuration?.parts || !snapshot.resources || !snapshot.engineering || !Array.isArray(snapshot.history)){
-      throw new TypeError('Team engine must return a complete mission state.');
+    if(!snapshot || !snapshot.configuration?.parts || !snapshot.resources || !snapshot.engineering ||
+       !snapshot.safety || !Array.isArray(snapshot.history)||!Array.isArray(snapshot.completedPhases))
+      throw new TypeError('Team engine must return a complete canonical mission state.');
+    const e=snapshot.engineering,r=snapshot.resources,s=snapshot.safety;
+    const bounded=(value,label,min=0,max=1e12)=>{
+      if(typeof value!=='number'||!Number.isFinite(value)||value<min||value>max)
+        throw new RangeError(`Invalid canonical mission value: ${label}`);
+    };
+    for(const slot of mandatorySlots){
+      if(typeof snapshot.configuration.parts[slot]!=='string'||!snapshot.configuration.parts[slot].trim())
+        throw new TypeError(`Missing canonical component identifier: ${slot}`);
+    }
+    if(e.maxMassKg!==26500)throw new RangeError('The game uses one fixed mass ceiling of 26,500 kg.');
+    bounded(e.totalMassKg,'total mass',1);
+    bounded(e.budgetUsd,'original budget');bounded(e.budgetSpentUsd,'spent budget');
+    bounded(e.budgetRemainingUsd,'remaining budget',-1e12);
+    if(Math.abs(e.budgetRemainingUsd-(e.budgetUsd-e.budgetSpentUsd))>0.01)
+      throw new RangeError('Canonical budget totals are inconsistent.');
+    bounded(e.generationWatts,'solar generation');bounded(e.consumptionWatts,'power consumption');
+    bounded(e.netPowerWatts,'net power',-1e12);
+    bounded(e.eclipseDurationHours,'eclipse duration');bounded(e.eclipseLoadWatts,'eclipse load');
+    bounded(e.postEclipseReserveWh,'post-eclipse reserve');
+    bounded(e.departureBurnTargetMps,'departure target',0.001);
+    bounded(e.departureToleranceMps,'departure tolerance');
+    bounded(e.minimumNextPhaseDeltaVMps,'next-phase maneuver reserve');
+    bounded(r.maneuverReserveMps,'current maneuver reserve');
+    bounded(r.batteryCapacityWh,'battery capacity',0.001);
+    bounded(r.batteryCurrentWh,'battery current',0,r.batteryCapacityWh);
+    bounded(r.bufferCapacityMb,'buffer capacity',0.001);
+    bounded(r.bufferCurrentMb,'buffer current',0,r.bufferCapacityMb);
+    bounded(r.scienceCollectedMb,'science collected');bounded(r.scienceTransmittedMb,'science transmitted');
+    bounded(r.scienceLostMb,'science lost');bounded(r.shieldHealthPercent,'shield health',0,100);
+    if(Math.abs(r.scienceCollectedMb-r.scienceTransmittedMb-r.bufferCurrentMb-r.scienceLostMb)>0.01)
+      throw new RangeError('Science data must remain buffered, transmitted, or lost.');
+    for(const key of ['crewSafe','essentialSystemsWorking','heatShieldInstalled','antennaActive']){
+      if(typeof s[key]!=='boolean')throw new TypeError(`Invalid canonical safety flag: ${key}`);
+    }
+    if(![1,2,3].includes(snapshot.phase)||!snapshot.completedPhases.every(x=>[1,2,3].includes(x))||
+       new Set(snapshot.completedPhases).size!==snapshot.completedPhases.length)
+      throw new RangeError('Invalid canonical campaign phase.');
+    if(snapshot.phase>=2&&!snapshot.completedPhases.includes(1)||
+       snapshot.phase>=3&&!snapshot.completedPhases.includes(2))
+      throw new RangeError('The preceding campaign phase must be recorded before advancing.');
+    if(snapshot.history.filter(event=>event.type==='departure-burn').length>1)
+      throw new RangeError('A departure maneuver must be applied only once.');
+    if(snapshot.phase===1&&snapshot.departureReceipt){
+      const t=snapshot.departureReceipt;
+      bounded(t.beforeDeltaVMps,'departure reserve before burn');
+      bounded(t.usedDeltaVMps,'departure burn debit',0.001);
+      bounded(t.afterDeltaVMps,'departure reserve after burn');
+      if(Math.abs(t.beforeDeltaVMps-t.usedDeltaVMps-t.afterDeltaVMps)>0.01||
+         Math.abs(t.afterDeltaVMps-r.maneuverReserveMps)>0.01)
+        throw new RangeError('Departure burn receipt does not match current maneuver reserve.');
     }
     return snapshot;
   }
@@ -1862,8 +1977,8 @@ initStars();render();
   };
   const oldGoto=goto;
   const oldRender=render;
-  steps.splice(0,steps.length,['briefing','01 BRIEF'],['hangar','02 BUILD'],['checklist','03 CHECK'],['departure','04 BURN'],['handoff','05 HANDOFF'],['flight','06 DEMO'],['debrief','07 REPORT']);
-  footer=function(){return `<footer class="app-footer"><div>MISSION CONTROL / NICOLAS</div><div>PHASE 1 · VERSION 3.0 · EN-US</div><div>EDUCATIONAL GAME · NOT NASA SOFTWARE</div></footer>`;};
+  steps.splice(0,steps.length,['briefing','BRIEF'],['hangar','BUILD'],['checklist','CHECK'],['departure','BURN'],['handoff','HANDOFF'],['flight','DEMO'],['debrief','REPORT']);
+  footer=function(){return `<footer class="app-footer"><div>MISSION CONTROL / NICOLAS</div><div>PHASE 1 · VERSION 3.1 · EN-US</div><div>EDUCATIONAL GAME · NOT NASA SOFTWARE</div></footer>`;};
   function burnDisplay(){
     const m=v3.official,e=m.engineering,r=m.resources;
     const committed=v3.burnStatus==='complete'||v3.burnStatus==='running';
@@ -1935,6 +2050,13 @@ initStars();render();
   };
   goto=function(screen){
     if(screen==='departure'||screen==='handoff'){
+      if(screen==='departure'){
+        try{
+          if(!v3.connected)v3.engine.confirmLiftoff();
+          else if(typeof v3.engine.recordLiftoff==='function')v3.engine.recordLiftoff({actionId:'phase1-liftoff'});
+          syncFromEngine();
+        }catch(error){v3.error=error.message;render();return;}
+      }
       speech.stop();state.screen=screen;state.expanded=null;render();window.scrollTo({top:0,behavior:'instant'});
       speech.say(screen==='departure'? 'Flight Director, liftoff confirmed. The guided translunar departure burn is now ready for review.':
         'Flight Director, Phase One complete. The departure maneuver is verified. Mission state is ready for the lunar flight team.',
@@ -1990,21 +2112,24 @@ initStars();render();
         v3.engine.commitDepartureBurn({actionId:id,requestedDeltaVMps:v3.previewBurnMps});
         v3.departureActionId=id;const updated=syncFromEngine();v3.burnStatus='running';v3.burnProgress=0;
         state.ui.validationError=null;render();
+        // Start the visible engine-burn progress while Mission Control describes the active burn.
+        // The completion announcement waits for BOTH the visual maneuver and its narration.
+        let visualDone=false,voiceDone=false;
+        const finish=()=>{
+          if(!visualDone||!voiceDone||v3.burnStatus!=='running'||state.screen!=='departure')return;
+          v3.burnStatus='complete';render();
+          speech.say(`Departure burn complete. ${fmt(updated.departureReceipt.usedDeltaVMps)} meters per second consumed. Remaining maneuver reserve: ${fmt(updated.resources.maneuverReserveMps)} meters per second.`,{scene:'departure-maneuver'});
+        };
         speech.say('Departure burn command accepted. Maneuver underway. Monitor the remaining delta-v reserve.',{
-          scene:'departure-maneuver',onDone:()=>{
-            let progress=0;
-            const step=()=>{
-              if(v3.burnStatus!=='running'||state.screen!=='departure')return;
-              progress=Math.min(100,progress+20);v3.burnProgress=progress;render();
-              if(progress<100)queue(step,260);
-              else{
-                v3.burnStatus='complete';render();
-                speech.say(`Departure burn complete. ${fmt(updated.departureReceipt.usedDeltaVMps)} meters per second consumed. Remaining maneuver reserve: ${fmt(updated.resources.maneuverReserveMps)} meters per second.`,{scene:'departure-maneuver'});
-              }
-            };
-            step();
-          }
+          scene:'departure-maneuver',onDone:()=>{voiceDone=true;finish();}
         });
+        const step=()=>{
+          if(v3.burnStatus!=='running'||state.screen!=='departure')return;
+          v3.burnProgress=Math.min(100,v3.burnProgress+20);render();
+          if(v3.burnProgress<100)queue(step,300);
+          else {visualDone=true;finish();}
+        };
+        queue(step,160);
       }catch(e){v3.error=e.message;render();speech.say('Burn rejected. '+e.message);}
     }
     if(action==='v3-complete-phase1'){
@@ -2076,6 +2201,8 @@ initStars();render();
       authorized:r.approved&&phase1WarningsAcknowledged()&&diagnostics().status==='complete'&&diagnostics().signature===shipSignature(state.ship)};},
     setShipSnapshot(partial){
       if(v3.connected)throw new Error('Team engine owns spacecraft state; use refreshFromEngine().');
+      if(demoEngine.state.departureReceipt||v3.completion)
+        throw new Error('The spacecraft is already in flight. Resource changes must come from the single campaign engine.');
       const result=priorAPI.setShipSnapshot(partial);
       const e=demoEngine.state.engineering,r=demoEngine.state.resources;
       if(partial.totalMassKg!==undefined)e.totalMassKg=partial.totalMassKg;
@@ -2084,6 +2211,7 @@ initStars();render();
       if(partial.fuelRemainingDeltaV!==undefined)r.maneuverReserveMps=partial.fuelRemainingDeltaV;
       if(partial.heatShieldInstalled!==undefined)demoEngine.state.safety.heatShieldInstalled=partial.heatShieldInstalled;
       if(partial.antennaActive!==undefined)demoEngine.state.safety.antennaActive=partial.antennaActive;
+      revokeDemoApproval(demoEngine.state,'Engineering snapshot updated; previous clearance is invalid.');
       syncFromEngine();v3.acknowledged={};invalidateDiagnostics();render();return result;
     },
     setMissionResult(payload){
@@ -2092,12 +2220,31 @@ initStars();render();
         throw new TypeError('Final result must contain sequential phases 1, 2, and 3.');
       if(payload.history[0]?.fuelSpentDeltaV!==v3.completion.departureReceipt.usedDeltaVMps)
         throw new Error('Final history does not match the committed Phase 1 departure burn.');
+      if(v3.connected){
+        const official=engineSnapshot();
+        const r=official.resources;
+        if(!official.completedPhases?.includes(3))
+          throw new Error('The official campaign must complete Phase 3 before the debriefing can open.');
+        for(const [label,reported,current] of [
+          ['maneuver reserve',payload.ship?.fuelRemainingDeltaV,r.maneuverReserveMps],
+          ['science collected',payload.ship?.scienceDataCollectedMb,r.scienceCollectedMb],
+          ['science transmitted',payload.ship?.scienceDataTransmittedMb,r.scienceTransmittedMb],
+          ['shield integrity',payload.ship?.heatShieldHealthPercent,r.shieldHealthPercent]
+        ]){
+          if(typeof reported!=='number'||!Number.isFinite(reported)||Math.abs(reported-current)>0.01)
+            throw new Error(`Final ${label} must match the single official campaign state.`);
+        }
+        if(payload.ship?.crewSafe!==official.safety?.crewSafe)
+          throw new Error('Final crew safety must match the official campaign result.');
+      }
       priorAPI.setMissionResult(payload);
     }
   });
   window.ArtemisNicolasPhase1=Object.freeze({
     connectEngine(engine){
-      if(v3.completion)throw new Error('Cannot replace the engine in the middle of a completed campaign.');
+      if(v3.completion||v3.departureActionId||v3.burnStatus!=='idle'||
+         demoEngine.state.launchApproval||demoEngine.state.departureReceipt)
+        throw new Error('Connect the official mission engine before launch authorization, not during a live mission.');
       for(const method of ['getState','evaluatePhase1','previewDepartureBurn','recordChecklistApproval','commitDepartureBurn','completePhase1'])
         if(typeof engine?.[method]!=='function')throw new TypeError(`Team engine is missing ${method}().`);
       const prev=v3.engine;v3.engine=engine;v3.connected=true;
