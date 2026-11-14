@@ -1,6 +1,6 @@
 {
   "name": "artemis-ii-nicolas-mission-director",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,8 +10,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:offline": "node tests/offline-smoke-test.cjs",
-    "test:browser": "python tests/mission-director-browser-test.py",
-    "test:narration": "python tests/narration-sync-browser-test.py"
+    "test:browser": "python tests/phase1-v3-browser-test.py",
+    "test:narration": "python tests/narration-sync-browser-test.py",
+    "test:cautions": "python tests/phase1-v3-caution-test.py",
+    "test:integration": "python tests/phase1-v3-engine-adapter-test.py",
+    "test:legacy": "python tests/mission-director-browser-test.py"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.6",

@@ -101,7 +101,8 @@
   const shipSignature = ship => JSON.stringify([
     ship.totalMassKg, ship.batteryChargePercent, ship.powerBalanceWatts,
     ship.heatShieldInstalled, ship.heatShieldHealthPercent,
-    ship.antennaActive, ship.fuelRemainingDeltaV
+    ship.antennaActive, ship.fuelRemainingDeltaV,
+    state.v3?.configFingerprint || ''
   ]);
   const queue = (callback, delay) => {
     const token = task.generation;
@@ -342,7 +343,7 @@
   }
   const isVerifiedForLaunch = () => {
     const d = diagnostics();
-    return !state.ui.validationError && d.status === 'complete' && d.result && d.result.approved &&
+    return !state.ui.validationError && phase1WarningsAcknowledged() && phase1Gates().eligible && d.status === 'complete' && d.result && d.result.approved &&
       d.signature === shipSignature(state.ship) && checklist(state.ship).approved;
   };
   function cancelRunningDiagnostics() {
@@ -359,6 +360,8 @@
       return;
     }
     const d = diagnostics();
+    try { v3RecordChecklistApproved(); }
+    catch (error) { invalidateDiagnostics(error.message); render(); return; }
     const verifiedSignature = d.signature;
     d.status = 'countdown';
     d.remaining = 10;
@@ -377,8 +380,7 @@
         speech.say('Ignition. Liftoff! Artemis II is on its way!', {
           scene: 'liftoff', onDone: () => {
             if (d !== diagnostics() || d.status !== 'liftoff') return;
-            state.flight = startFlight();
-            goto('flight');
+            goto('departure');
           }
         });
         return;

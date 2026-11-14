@@ -5,6 +5,8 @@ source_dir = base / 'standalone'
 source = (source_dir / 'legacy_base.html').read_text(encoding='utf-8')
 css = (source_dir / 'offline-enhancement.css').read_text(encoding='utf-8')
 js = (source_dir / 'offline-enhancement.js').read_text(encoding='utf-8')
+v3_js = (source_dir / 'phase1-v3.js').read_text(encoding='utf-8')
+v3_css = (source_dir / 'phase1-v3.css').read_text(encoding='utf-8')
 assert source.count('</style>') == 1 and source.count('</script>') == 1
 assert '<html lang="pt-BR">' in source
 updated = source.replace('<html lang="pt-BR">', '<html lang="en-US">', 1)
@@ -29,8 +31,8 @@ updated = updated.replace('content="Protótipo offline da Parte 1 de Nicolas: AR
 legacy = "else if(action==='launch'){if(!checklist().approved)return;state.flight=startFlight();goto('flight');}"
 assert legacy in updated
 updated = updated.replace(legacy, "else if(action==='launch'){return;}", 1)
-updated = updated.replace('</style>', '\n/* Standalone enhancement: English edition */\n' + css + '\n</style>', 1)
-updated = updated.replace('</script>', '\n/* Standalone enhancement: English edition */\n' + js + '\n</script>', 1)
+updated = updated.replace('</style>', '\n/* Standalone enhancement: English edition */\n' + css + v3_css + '\n</style>', 1)
+updated = updated.replace('</script>', '\n/* Standalone enhancement: English edition */\n' + js[:-6] + '\n/* Phase 1 mission director v3 */\n' + v3_js + '\n' + js[-6:] + '\n</script>', 1)
 output = base / 'index.html'
 output.write_text(updated, encoding='utf-8')
 # The output is written directly to the project root.
