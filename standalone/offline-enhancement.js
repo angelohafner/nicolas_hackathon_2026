@@ -91,6 +91,7 @@
   state.ui = {
     selectedPhase: 0, selectedRule: 0, resultsExpanded: false,
     scoreAnimated: false, audioHelp: false,
+    validationError: null,
     diagnostics: { status: 'idle', entries: [], revealed: [], activeIndex: -1, progress: 0, signature: null, result: null, remaining: 10, history: [] }
   };
   const diagnostics = () => state.ui.diagnostics;
@@ -119,40 +120,97 @@
     task.countdown = null;
   }
   function voiceStatus() {
+    if (!audio.enabled) return 'VOICE OFF · CAPTIONS ACTIVE';
     if (!audio.supported) return 'VOICE UNAVAILABLE · CAPTIONS ACTIVE';
     const voices = window.speechSynthesis.getVoices();
-    if (voices.length > 0 && !voices.some(voice => voice.lang.toLowerCase().startsWith('en-us'))) {
-      return 'EN-US VOICE UNAVAILABLE · CAPTIONS ACTIVE';
+    if (!voices.some(voice => (voice.lang || '').toLowerCase().startsWith('en-us'))) {
+      return 'EN-US VOICE NOT DETECTED · CAPTIONS ACTIVE';
     }
-    return audio.enabled ? 'VOICE ON · EN-US' : 'VOICE OFF · CAPTIONS ACTIVE';
+    return 'EN-US VOICE AVAILABLE · CAPTIONS ACTIVE';
   }
+  // The narration token prevents stale utterance callbacks from advancing an old scene.
+  // Each narrated step completes after the en-US utterance ends, or by a caption-only fallback.
+  let narrationToken = 0;
+  let narrationFallback = null;
+  let narrationContinuation = null;
+  const sceneKey = () => {
+    if (state.screen === 'briefing') return `briefing-phase-${state.ui.selectedPhase + 1}`;
+    if (state.screen === 'flight') return state.flight?.phaseIndex === 3 ? 'flight-complete' : `flight-phase-${(state.flight?.phaseIndex || 0) + 1}`;
+    if (state.screen === 'checklist') {
+      const d = diagnostics();
+      return d.status === 'countdown' ? `countdown-${d.clearance ? 'clearance' : d.remaining}` :
+        d.status === 'liftoff' ? 'liftoff' : d.activeIndex >= 0 ? `check-${d.activeIndex + 1}` : 'checklist';
+    }
+    return state.screen;
+  };
   const speech = {
     stop() {
+      narrationToken++;
+      narrationContinuation = null;
+      if (narrationFallback !== null) window.clearTimeout(narrationFallback);
+      narrationFallback = null;
       if (audio.supported) {
         try { window.speechSynthesis.cancel(); } catch (_error) { /* Captions remain available. */ }
       }
     },
+    takeContinuation() {
+      // User-initiated mute/unmute must not freeze an in-flight check or countdown.
+      const continuation = narrationContinuation;
+      this.stop();
+      return continuation;
+    },
     say(message, options = {}) {
+      this.stop();
+      const token = narrationToken;
+      narrationContinuation = typeof options.onDone === 'function' ? options.onDone : null;
       audio.caption = String(message);
+      const scene = options.scene || sceneKey();
+      const shell = document.getElementById('app-shell');
+      if (shell) shell.dataset.narrationScene = scene;
       const bar = document.getElementById('mission-captions');
-      const text = document.getElementById('mission-caption-text');
-      if (text) text.textContent = audio.caption;
-      if (bar) bar.classList.add('mission-captions--active');
-      if (options.captionOnly || !audio.enabled || !audio.supported) return;
+      const captionText = document.getElementById('mission-caption-text');
+      if (captionText) captionText.textContent = audio.caption;
+      if (bar) {
+        bar.classList.add('mission-captions--active');
+        bar.dataset.scene = scene;
+      }
+      let finished = false;
+      const done = () => {
+        if (finished || token !== narrationToken) return;
+        finished = true;
+        if (narrationFallback !== null) window.clearTimeout(narrationFallback);
+        narrationFallback = null;
+        narrationContinuation = null;
+        if (typeof options.onDone === 'function') options.onDone();
+      };
+      const captionDuration = Math.max(450, options.captionDuration || 550);
+      const captionFallback = () => {
+        if (typeof options.onDone === 'function') narrationFallback = window.setTimeout(done, captionDuration);
+      };
+      if (options.captionOnly || !audio.enabled || !audio.supported) { captionFallback(); return; }
       try {
         const availableVoices = window.speechSynthesis.getVoices();
-        const englishVoices = availableVoices.filter(v => v.lang.toLowerCase().startsWith('en-us'));
-        if (availableVoices.length && !englishVoices.length) return;
-        const selection = englishVoices.find(v => v.localService) || englishVoices[0] || null;
+        const englishVoices = availableVoices.filter(v => (v.lang || '').toLowerCase().startsWith('en-us'));
+        if (!englishVoices.length) { captionFallback(); return; }
+        const selection = englishVoices.find(v => v.localService) || englishVoices[0];
         const utterance = new SpeechSynthesisUtterance(audio.caption);
         utterance.lang = 'en-US';
+        utterance.voice = selection;
         utterance.volume = audio.volume;
         utterance.rate = options.rate || .97;
         utterance.pitch = .98;
-        if (selection) utterance.voice = selection;
-        window.speechSynthesis.cancel();
+        utterance.onend = done;
+        utterance.onerror = done;
+        // Browser speech engines occasionally omit onend: never freeze the sequence.
+        const wordCount = audio.caption.trim().split(/\s+/).length;
+        const timeoutMs = Math.min(18000, Math.max(1800, 1400 + wordCount * 400));
+        narrationFallback = window.setTimeout(done, timeoutMs);
         window.speechSynthesis.speak(utterance);
-      } catch (_error) { /* On unsupported systems, captions still explain the event. */ }
+      } catch (_error) {
+        if (narrationFallback !== null) window.clearTimeout(narrationFallback);
+        narrationFallback = null;
+        captionFallback();
+      }
     }
   };
   function ensureCaptions() {
@@ -204,10 +262,28 @@
     const shortStatus = item.status === 'green' ? 'GREEN. Nominal.' : item.status === 'yellow' ? 'YELLOW. Caution.' : 'RED. Check failed.';
     return `${systemNames[index]}: ${shortStatus}`;
   };
+  function clearanceAnnouncement(result, forCountdown = false) {
+    if (result.greens === 5) return forCountdown
+      ? 'Flight Director, all five stations report GO. Artemis II is cleared for launch. Initiating terminal countdown.'
+      : 'Flight Director, five green checks confirmed. Artemis II is cleared for the terminal countdown.';
+    const remaining = result.items.filter(item => item.status !== 'green');
+    const caution = remaining.some(item => item.id === 'antenna')
+      ? 'Communications remain offline; science data will stay in the onboard buffer.'
+      : 'One noncritical caution remains on the checklist.';
+    return forCountdown
+      ? `Flight Director, four green checks meet the game launch criteria. ${caution} Launch authorized with caution. Initiating terminal countdown.`
+      : `Flight Director, four of five checks are green. ${caution} Educational launch criteria satisfied with caution.`;
+  }
   function runDiagnostics() {
     if (state.screen !== 'checklist') return;
     if (diagnostics().status === 'running' || diagnostics().status === 'countdown') return;
     clearAsync();
+    if (state.ui.validationError) {
+      systemMessage(`INVALID SPACECRAFT DATA · ${state.ui.validationError}`, 'bad');
+      speech.say('Flight Director, invalid spacecraft data. Correct the integration input before launch diagnostics.');
+      render();
+      return;
+    }
     const signature = shipSignature(state.ship);
     const result = checklist({ ...state.ship });
     const d = {
@@ -215,17 +291,16 @@
       progress: 0, signature, result, remaining: 10, history: []
     };
     state.ui.diagnostics = d;
+    const current = () => state.screen === 'checklist' && d === diagnostics() &&
+      signature === shipSignature(state.ship) && !state.ui.validationError;
     systemMessage('DIAGNOSTICS INITIALIZED · Scanning five launch requirements.');
-    speech.say('Flight Director, beginning pre-launch diagnostics. All stations, stand by.');
     render();
-
+    speech.say('Flight Director, beginning pre-launch diagnostics. All stations, stand by.', {
+      scene: 'checklist',
+      onDone: () => { if (current()) scan(0); }
+    });
     function scan(index) {
-      if (state.screen !== 'checklist' || d !== diagnostics()) return;
-      if (signature !== shipSignature(state.ship)) {
-        invalidateDiagnostics('Spacecraft configuration changed. Run diagnostics again.');
-        render();
-        return;
-      }
+      if (!current()) return;
       if (index >= 5) {
         d.activeIndex = -1;
         d.status = 'complete';
@@ -233,33 +308,41 @@
         systemMessage(verdict
           ? `GO VERIFIED · ${d.result.greens}/5 GREEN · no critical RED findings.`
           : `LAUNCH HOLD · ${d.result.greens}/5 GREEN · ${d.result.criticalReds} critical RED finding(s).`, verdict ? 'good' : 'bad');
-        speech.say(verdict
-          ? 'Flight Director, all required stations report GO. Artemis II is cleared for the terminal countdown.'
-          : 'Flight Director, we are NO-GO for launch. Review the highlighted systems and run diagnostics again.');
         render();
+        speech.say(verdict ? clearanceAnnouncement(d.result) :
+          'Flight Director, we are NO-GO for launch. Review the highlighted systems and run diagnostics again.', {scene:'checklist'});
         return;
       }
       d.activeIndex = index;
       systemMessage(`CHECK 0${index + 1} · ${systemNames[index].toUpperCase()} · IN PROGRESS`);
       render();
-      queue(() => {
-        d.revealed[index] = d.result.items[index].status;
-        d.progress = index + 1;
-        const item = d.result.items[index];
-        const tone = item.status === 'green' ? 'good' : item.status === 'red' ? 'bad' : 'warn';
-        systemMessage(`CHECK 0${index + 1} · ${diagnosticSummary(item, index)}`, tone);
-        speech.say(diagnosticSummary(item, index));
-        d.history.push({ id: item.id, status: item.status, value: item.value, detail: item.detail });
-        d.activeIndex = -1;
-        render();
-        queue(() => scan(index + 1), 850);
-      }, 1200);
+      speech.say(`Checking ${systemNames[index]}.`, {
+        scene: `check-${index+1}`,
+        onDone: () => {
+          if (!current()) return;
+          const item = d.result.items[index];
+          d.revealed[index] = item.status;
+          d.progress = index + 1;
+          const tone = item.status === 'green' ? 'good' : item.status === 'red' ? 'bad' : 'warn';
+          systemMessage(`CHECK 0${index + 1} · ${diagnosticSummary(item, index)}`, tone);
+          d.history.push({ id: item.id, status: item.status, value: item.value, detail: item.detail });
+          render();
+          speech.say(diagnosticSummary(item, index), {
+            scene: `check-${index+1}`,
+            onDone: () => {
+              if (!current()) return;
+              d.activeIndex = -1;
+              render();
+              queue(() => scan(index + 1), 180);
+            }
+          });
+        }
+      });
     }
-    queue(() => scan(0), 1050);
   }
   const isVerifiedForLaunch = () => {
     const d = diagnostics();
-    return d.status === 'complete' && d.result && d.result.approved &&
+    return !state.ui.validationError && d.status === 'complete' && d.result && d.result.approved &&
       d.signature === shipSignature(state.ship) && checklist(state.ship).approved;
   };
   function cancelRunningDiagnostics() {
@@ -281,40 +364,44 @@
     d.remaining = 10;
     d.clearance = true;
     systemMessage('MISSION CONTROL · Flight Director clearance confirmed.');
-    speech.say('Flight Director, all stations report GO. Artemis II is cleared for launch. Initiating terminal countdown.');
     render();
-    // Allow the clearance announcement to finish before individual numbers begin.
-    queue(() => {
-      if (d !== diagnostics() || d.status !== 'countdown') return;
+    const stillCleared = () => d === diagnostics() && d.status === 'countdown' &&
+      state.screen === 'checklist' && verifiedSignature === shipSignature(state.ship) &&
+      !state.ui.validationError && checklist(state.ship).approved;
+    const tick = number => {
+      if (!stillCleared()) return;
+      if (number === 0) {
+        d.status = 'liftoff';
+        systemMessage('T PLUS ZERO · LIFTOFF', 'good');
+        render();
+        speech.say('Ignition. Liftoff! Artemis II is on its way!', {
+          scene: 'liftoff', onDone: () => {
+            if (d !== diagnostics() || d.status !== 'liftoff') return;
+            state.flight = startFlight();
+            goto('flight');
+          }
+        });
+        return;
+      }
+      d.remaining = number;
       d.clearance = false;
-      speech.say('Ten.');
       render();
-      task.countdown = window.setInterval(() => {
-      if (state.screen !== 'checklist' || verifiedSignature !== shipSignature(state.ship) || !checklist(state.ship).approved) {
-        cancelDiagnosticSession();
-        speech.say('HOLD HOLD HOLD. Terminal count stopped. Safety verification is required.');
-        render();
-        return;
-      }
-      d.remaining -= 1;
-      if (d.remaining > 0) {
-        speech.say(String(d.remaining));
-        render();
-        return;
-      }
-      window.clearInterval(task.countdown);
-      task.countdown = null;
-      d.status = 'liftoff';
-      speech.say('Ignition. Liftoff! Artemis II is on its way!');
-      systemMessage('T PLUS ZERO · LIFTOFF', 'good');
-      render();
-      queue(() => {
-        if (d !== diagnostics()) return;
-        state.flight = startFlight();
-        goto('flight');
-      }, 1800);
-    }, 1000);
-    }, 3850);
+      const start = performance.now();
+      const word = ['Zero','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten'][number];
+      speech.say(`${word}.`, {
+        scene: `countdown-${number}`,
+        onDone: () => {
+          if (!stillCleared()) return;
+          // Maintain at least a one-second cadence without clipping a slow voice.
+          const rest = Math.max(0, 1000 - (performance.now() - start));
+          queue(() => tick(number - 1), rest);
+        }
+      });
+    };
+    speech.say(clearanceAnnouncement(d.result, true), {
+      scene: 'countdown-clearance',
+      onDone: () => { if (stillCleared()) tick(10); }
+    });
   }
   function abortCountdown() {
     const d = diagnostics();
@@ -331,8 +418,8 @@
   // The checker retains the original game thresholds while translating every result to en-US.
   checklist = function(ship = state.ship) {
     const mass = ship.totalMassKg > MASS_LIMIT ? 'red' : ship.totalMassKg > MASS_GREEN ? 'yellow' : 'green';
-    const energy = ship.batteryChargePercent <= 0 ? 'red' :
-      ship.batteryChargePercent <= 20 || ship.powerBalanceWatts < 0 ? 'yellow' : 'green';
+    const energy = ship.batteryChargePercent <= 0 || ship.powerBalanceWatts <= 0 ? 'red' :
+      ship.batteryChargePercent <= 20 ? 'yellow' : 'green';
     const shield = !ship.heatShieldInstalled || ship.heatShieldHealthPercent <= 0 ? 'red' :
       ship.heatShieldHealthPercent < 60 ? 'yellow' : 'green';
     const antenna = ship.antennaActive ? 'green' : 'red';
@@ -349,8 +436,8 @@
     const descriptions = [
       mass === 'red' ? 'Vehicle mass exceeds the game limit.' : mass === 'yellow' ?
         'Within the game limit, but the recommended safety margin is not met.' : 'Mass is within the game limit and recommended 15% margin.',
-      energy === 'red' ? 'Battery is depleted.' : energy === 'yellow' ?
-        'Battery reserve is low or power consumption exceeds generation.' : 'Electrical power is available for critical systems.',
+      energy === 'red' ? 'Launch blocked: battery is depleted or net electrical power is not positive.' : energy === 'yellow' ?
+        'Battery reserve is low; recharge before launch for a stronger safety margin.' : 'Battery is charged and electrical generation exceeds demand.',
       shield === 'red' ? 'The heat shield is missing or unusable.' : shield === 'yellow' ?
         'Thermal protection integrity is reduced.' : 'Thermal protection is installed and ready.',
       antenna === 'green' ? 'A communication link is available.' : 'Science data must remain in onboard buffer storage.',
@@ -373,7 +460,7 @@
   footer = function() {
     return `<footer class="app-footer"><div class="footer-accent"><span></span><span></span><span></span></div>
       <div>${icon('radio',13)} MISSION CONTROL <b>/</b> PART 01 · NICOLAS</div>
-      <div>${icon('activity',13)} EXPERIENCE v2.0 · EN-US</div>
+      <div>${icon('activity',13)} EXPERIENCE v2.1 · EN-US</div>
       <div class="footer-right">${icon('shield',13)} EDUCATIONAL SIMULATION <span>•</span> NOT AN OFFICIAL NASA PRODUCT</div></footer>`;
   };
   header = function() {
@@ -415,13 +502,14 @@
   };
   preview = function() {
     const c = checklist();
-    return `<div class="readiness-preview ${c.approved?'readiness-preview--go':'readiness-preview--nogo'}">
+    const ready = c.approved && !state.ui.validationError;
+    return `<div class="readiness-preview ${ready?'readiness-preview--go':'readiness-preview--nogo'}">
       <div class="readiness-preview-top"><span>SPACECRAFT READINESS</span><span class="preview-live-dot">LIVE</span></div>
-      <strong>${c.approved?'POTENTIAL GO':'NO-GO'}</strong>
-      <small>${c.approved?'Eligible for diagnostics':'Correct issues before launch'}</small></div>
+      <strong>${ready?'POTENTIAL GO':'NO-GO'}</strong>
+      <small>${ready?'Eligible for diagnostics':'Correct issues before launch'}</small></div>
       <div class="preview-list">${c.items.map(item => `<div class="preview-list-item"><span class="preview-status preview-status--${item.status}"></span>
       <span>${escape(item.label)}</span><small>${item.status==='green'?'PASS':item.status==='yellow'?'CAUTION':'FAIL'}</small></div>`).join('')}</div>
-      <div class="preview-progress"><div><strong>${c.greens} of 5</strong><span>green requirements</span></div>${meter(c.greens*20,c.approved?'green':'amber')}</div>`;
+      <div class="preview-progress"><div><strong>${c.greens} of 5</strong><span>green requirements</span></div>${meter(c.greens*20,ready?'green':'amber')}</div>`;
   };
 
   brief = function() {
@@ -470,6 +558,7 @@
       <div class="flow-heading"><div>${eyebrow('INTEGRATION LAB / DEMO DATA')}<h1>Configure <span>Orion.</span></h1>
       <p>Use these test controls to explore how the engineering data supplied by your teammates affects launch readiness.</p></div>
       <span class="label-demo">SIMULATED INPUTS</span></div>
+      ${state.ui.validationError ? `<div class="integration-error" role="alert">${icon('warning',17)} INVALID ENGINEERING DATA · ${escape(state.ui.validationError)}</div>` : ''}
       <div class="flow-grid hangar-grid"><section class="glass-panel config-panel">
         <div class="panel-heading"><span class="panel-heading-icon">${icon('sliders',19)}</span><div><h2>Spacecraft configuration</h2><p>Change the inputs and see the checklist respond.</p></div></div>
         <div class="slider-stack">
@@ -513,6 +602,7 @@
         <h1>Launch <span>readiness.</span></h1>
         <p>Run five sequential checks. Authorization requires at least four GREEN results and no critical RED failure.</p></div>
         <span class="top-status top-status--${go?'go':'no-go'}"><span class="top-status-dot"></span>${statusLabel}</span></div>
+      ${state.ui.validationError ? `<div class="integration-error" role="alert">${icon('warning',17)} INVALID ENGINEERING DATA · ${escape(state.ui.validationError)} · Correct the spacecraft snapshot before running diagnostics.</div>` : ''}
       <div class="flow-grid checklist-grid"><section class="glass-panel checklist-panel">
         <div class="panel-heading panel-heading--between"><div class="panel-heading">
           <span class="panel-heading-icon">${icon('shield',20)}</span><div><h2>PRE-LAUNCH DIAGNOSTICS</h2><p>NASA-inspired Mission Control workflow · educational simulation</p></div></div>
@@ -549,19 +639,19 @@
         <div class="launch-panel-lines"><div><span>Green checks</span><strong>${countGreens} / 5</strong></div>${meter(countGreens*20,go?'green':'amber')}
           <div><span>Critical red failures</span><strong class="${isComplete&&d.result.criticalReds?'text-danger':'text-success'}">${observed?d.result.items.slice(0,observed).filter(item=>item.critical&&item.status==='red').length:0}</strong></div></div>
         ${inCountdown ? `<div class="countdown-stage"><span>${d.clearance?'FLIGHT DIRECTOR CLEARANCE':'TERMINAL COUNTDOWN'}</span><strong>${d.clearance?'GO':String(d.remaining).padStart(2,'0')}</strong>
-          <small>${d.clearance?'ALL STATIONS HAVE REPORTED GO':`T - ${d.remaining} SECONDS`}</small><div class="countdown-progress"><span style="width:${(10-d.remaining)*10}%"></span></div></div>
+          <small>${d.clearance?(d.result?.greens===5?'ALL FIVE STATIONS REPORT GO':'FOUR GREEN · CAUTION ACCEPTED'):`T - ${d.remaining} SECONDS`}</small><div class="countdown-progress"><span style="width:${(10-d.remaining)*10}%"></span></div></div>
           <button class="button button--outline button--launch" data-action="abort-countdown">${icon('warning',18)} ABORT COUNTDOWN</button>` :
           isLiftoff ? `<div class="countdown-stage countdown-stage--liftoff"><span>MISSION TIME</span><strong>T+00</strong><small>LIFTOFF CONFIRMED</small><div class="launch-rocket-visual"><span>${icon('rocket',48)}</span><i></i></div></div>` :
           `<div class="launch-verdict launch-verdict--${go?'go':'no-go'}">${icon(go?'check':'lock',22)}<div>
-            <strong>${isComplete?(go?'ALL REQUIRED STATIONS GO':'LAUNCH HOLD'):'AWAITING DIAGNOSTICS'}</strong>
-            <p>${running?'System checks are running…':isComplete?(go?'The vehicle is eligible for terminal count.':d.result.criticalReds?'Critical faults must be corrected.':'A minimum of four GREEN checks is required.'):'Launch approval requires a completed diagnostic scan.'}</p></div></div>
+            <strong>${isComplete?(go?(d.result.greens===5?'ALL FIVE STATIONS GO':'GO WITH CAUTION'):'LAUNCH HOLD'):'AWAITING DIAGNOSTICS'}</strong>
+            <p>${running?'System checks are running…':isComplete?(go?(d.result.greens===5?'All five systems passed; terminal count is available.':'Four GREEN checks satisfy the game rule. Any remaining caution must be explained.') :d.result.criticalReds?'Critical faults must be corrected.':'A minimum of four GREEN checks is required.'):'Launch approval requires a completed diagnostic scan.'}</p></div></div>
           ${running?`<button class="button button--outline button--launch" data-action="cancel-diagnostics">${icon('warning',18)} CANCEL DIAGNOSTICS</button>`:
           `<button class="button button--outline button--launch" data-action="run-diagnostics">${icon('activity',18)} ${isComplete?'RERUN DIAGNOSTICS':'RUN PRE-LAUNCH DIAGNOSTICS'}</button>`}
           <button class="button button--primary button--launch" data-action="start-countdown" ${approvedToLaunch?'':'disabled'}>${icon(approvedToLaunch?'rocket':'lock',19)} ${approvedToLaunch?'AUTHORIZE LAUNCH':'LAUNCH LOCKED'} ${icon('arrow',18)}</button>`}
         <p class="launch-panel-caption">${inCountdown?'The Flight Director can abort at any time.':go?'The terminal countdown will begin at T−10 seconds.':'Correct any problems, then rerun the scan.'}</p>
         <div class="mission-director-tag">${icon('radio',16)} <span>MISSION CONTROL VOICE <b>${audio.enabled?'ENABLED':'MUTED'}</b></span></div>
         </aside></div>
-      ${state.tips?`<div class="checklist-footnote">${icon('warning',17)}<span><strong>Engineering note:</strong> NASA uses “CML 4” for <em>Concept Maturity Level 4 (Point Design)</em>. Its use here as a pre-launch checklist is an <b>educational adaptation</b>. The ${fmt(MASS_LIMIT)} kg threshold is a game parameter, not an official SLS limit.</span></div>`:''}
+      <div class="checklist-footnote">${icon('warning',17)}<span><strong>Educational simulation:</strong> NASA uses “CML 4” for <em>Concept Maturity Level 4 (Point Design)</em>, not an operational launch checklist. The ${fmt(MASS_LIMIT)} kg mass limit and all GO/NO-GO thresholds are fictional game values.</span></div>
       <div class="flow-actions"><button class="button button--text" data-action="to-hangar" ${running||inCountdown?'disabled':''}>${icon('back',17)} ADJUST SPACECRAFT</button>
         <span class="inline-assist">${icon('shield',16)} Crew safety comes first.</span></div>
     </main>`;
@@ -583,13 +673,18 @@
     ];
     [latest.title, latest.description] = englishHistory[flight.phaseIndex-1];
     const announcements = [
-      'Flight Director, Earth orbit checkout is complete. Orion is heading toward the Moon.',
-      'Mission Control, lunar flyby complete. Communications restored. Science data are being transmitted.',
+      'Flight Director, Earth orbit checkout is complete. The lunar far-side scene is now displayed. Prepare for radio blackout and science data buffering.',
+      'Flight Director, the lunar flyby is complete. The Earth return scene is now displayed. Prepare for trajectory correction and reentry.',
       flight.ship.crewSafe
-        ? 'Flight Director, splashdown confirmed. The crew is safe. Excellent work.'
-        : 'Flight Director, the simulation identified an unsafe reentry. Review the mission outcome.'
+        ? 'Flight Director, the splashdown scene is displayed. The crew is safe. Excellent work.'
+        : 'Flight Director, the Earth return is unsafe in this simulation. Review the outcome.'
     ];
-    speech.say(announcements[flight.phaseIndex-1]);
+    const expected = flight.phaseIndex;
+    queue(() => {
+      if (state.screen === 'flight' && state.flight === flight && flight.phaseIndex === expected) {
+        speech.say(announcements[expected-1], { scene:expected===3?'flight-complete':`flight-phase-${expected+1}` });
+      }
+    }, 0);
   };
 
   flightPage = function() {
@@ -612,7 +707,7 @@
         <div><small>PHASE 0${index+1}</small><strong>${phase[0]}</strong></div>${index<2?'<div class="flight-timeline-line"></div>':''}</div>`).join('')}</div>
       <div class="flow-grid flight-grid"><section class="glass-panel flight-main-panel"><div class="panel-heading"><span class="panel-heading-icon">${icon('rocket',19)}</span>
         <div><h2>${complete?'Debriefing ready':stage[0]}</h2><p>${complete?'The three phase results are ready for review.':'Tracking Orion in the educational simulation.'}</p></div></div>
-        <div class="flight-feature"><div class="flight-feature-orbit"><span class="flight-orbit-a"></span><span class="flight-orbit-b"></span>
+        <div class="flight-feature"><div class="flight-feature-orbit" data-visual-phase="${complete?'splashdown':p.phaseIndex===1?'moon':p.phaseIndex===2?'earth-return':'earth'}" role="img" aria-label="${complete?'Mission complete, splashdown confirmed':p.phaseIndex===1?'Orion near the Moon':p.phaseIndex===2?'Orion returning to Earth':'Orion in Earth orbit'}"><span class="flight-orbit-a"></span><span class="flight-orbit-b"></span>
           <span class="flight-planet flight-planet--earth"></span><span class="flight-planet flight-planet--moon"></span><span class="flight-ship"></span></div>
           <div class="flight-feature-copy"><span class="mini-eyebrow">${complete?'MISSION COMPLETE':`PHASE 0${p.phaseIndex+1}`}</span>
           <h2>${complete?'Welcome home.':phases[Math.min(p.phaseIndex,2)][0]}</h2>
@@ -710,6 +805,14 @@
         <div class="reality-heading">WHAT REALLY HAPPENED?</div>
         ${[['LAUNCH',NASA.launch],['SPLASHDOWN',NASA.splash],['DURATION',NASA.duration],['MISSION',NASA.type],['RECOVERY',NASA.landing],['CREW',NASA.crew]].map(pair=>`<div class="reality-row"><span>${pair[0]}</span><strong>${pair[1]}</strong></div>`).join('')}
         <div class="reality-divider"></div>
+        <div class="reality-comparison" aria-label="Your simulated mission compared with real Artemis II">
+          <strong>YOUR MISSION VS. REAL ARTEMIS II</strong>
+          <div class="comparison-labels"><span>YOUR GAME</span><span>REAL NASA MISSION</span></div>
+          <div class="comparison-pair"><span>${r.crewSafe?'Crew returned safely':'Crew return unsafe'}</span><span>Crew recovered safely</span></div>
+          <div class="comparison-pair"><span>${fmtDecimal(r.simulatedDays)} simulated days</span><span>${NASA.duration}</span></div>
+          <div class="comparison-pair"><span>${fmt(r.scienceTransmittedMb)} MB (game data)</span><span>Not directly comparable</span></div>
+        </div>
+        <div class="reality-divider"></div>
         <div class="reality-row"><span>GAME DURATION</span><strong>${fmtDecimal(r.simulatedDays)} simulated days</strong></div>
         <div class="reality-row"><span>GAME REENTRY</span><strong>${fmtDecimal(r.reentryAngleDeg)}° (simplified model)</strong></div>
         <div class="reality-row"><span>SCIENCE DATA</span><strong>Game numbers not comparable to NASA telemetry</strong></div>
@@ -752,6 +855,8 @@
       speech.say('Flight Director, configure the spacecraft and review the engineering indicators before the launch checks.');
     } else if (screen === 'checklist') {
       speech.say('Mission Control. Pre-launch checklist is ready. Select Run Pre-Launch Diagnostics to begin.');
+    } else if (screen === 'flight') {
+      speech.say('Flight Director, liftoff complete. Earth orbit checkout is now displayed. Run Phase One to continue.', {scene:'flight-phase-1'});
     } else if (screen === 'debrief') {
       const r = report();
       if (r) speech.say(r.crewSafe
@@ -766,6 +871,13 @@
       invalidateDiagnostics('Configuration changed. Re-run diagnostics to authorize launch.');
     }
     baseRender();
+    const shell = document.getElementById('app-shell');
+    const visualScene = state.screen === 'briefing' ?
+      (state.ui.selectedPhase === 1 ? 'moon' : state.ui.selectedPhase === 2 ? 'earth-return' : 'earth') :
+      state.screen === 'flight' ?
+        (state.flight?.phaseIndex === 1 ? 'moon' : state.flight?.phaseIndex >= 2 ? 'earth-return' : 'earth') :
+        state.screen === 'debrief' ? 'earth-return' : 'earth';
+    if (shell) { shell.dataset.visualScene = visualScene; shell.dataset.activeMissionScene = sceneKey(); }
     ensureCaptions();
     const counter = document.getElementById('animated-score');
     if (counter && !state.ui.scoreAnimated && window.requestAnimationFrame) {
@@ -793,22 +905,28 @@
       case 'listen-briefing':
         speech.say('Flight Director, welcome to Artemis Two: Lunar Odyssey. Explore the three mission phases, prepare Orion, and return the crew safely to Earth. Your decisions matter.');
         break;
-      case 'select-phase':
+      case 'select-phase': {
         state.ui.selectedPhase = Number(target.dataset.index);
         render();
+        const lesson = lessons[state.ui.selectedPhase];
+        speech.say(`${lesson.title}. ${lesson.body}`, { scene:`briefing-phase-${state.ui.selectedPhase+1}` });
         break;
-      case 'select-rule':
+      }
+      case 'select-rule': {
         state.ui.selectedRule = Number(target.dataset.index);
         render();
+        const rule = ruleLessons[state.ui.selectedRule];
+        speech.say(`${rule.title}. ${rule.details}`, { scene:`briefing-rule-${state.ui.selectedRule+1}` });
         break;
+      }
       case 'narrate-phase': {
         const lesson = lessons[state.ui.selectedPhase];
-        speech.say(`${lesson.title}. ${lesson.body} ${lesson.challenge}`);
+        speech.say(`${lesson.title}. ${lesson.body} ${lesson.challenge}`, {scene:`briefing-phase-${state.ui.selectedPhase+1}`});
         break;
       }
       case 'narrate-rule': {
         const rule = ruleLessons[state.ui.selectedRule];
-        speech.say(`${rule.title}. ${rule.details}`);
+        speech.say(`${rule.title}. ${rule.details}`, {scene:`briefing-rule-${state.ui.selectedRule+1}`});
         break;
       }
       case 'run-diagnostics': runDiagnostics(); break;
@@ -826,23 +944,40 @@
           : `Flight Director, the crew did not achieve a safe return in this simulation. Your score is ${r.score}. Review the event log, make adjustments, and try again.`);
         break;
       }
-      case 'toggle-voice':
+      case 'toggle-voice': {
+        const continuation = speech.takeContinuation();
         audio.enabled = !audio.enabled;
         if (!audio.enabled) {
-          speech.stop();
           speech.say('Narration muted. Closed captions remain enabled.', {captionOnly:true});
         } else {
           speech.say('Mission Control narration enabled.');
         }
+        render();
+        if (continuation) queue(() => continuation(), 350);
+        break;
+      }
+      case 'reset':
+        state.ui.validationError = null;
+        invalidateDiagnostics();
+        render();
+        break;
+      case 'ideal':
+      case 'fail':
+        state.ui.validationError = null;
+        invalidateDiagnostics('Configuration changed. Run pre-launch diagnostics again.');
         render();
         break;
       case 'toggle-sound-settings':
         state.ui.audioHelp = !state.ui.audioHelp;
         render();
         break;
-      case 'test-voice':
-        speech.say('Mission Control voice test. Flight Director, all stations are standing by.');
+      case 'test-voice': {
+        const continuation = speech.takeContinuation();
+        speech.say('Mission Control voice test. Flight Director, all stations are standing by.', {
+          onDone: continuation || undefined
+        });
         break;
+      }
       case 'hide-caption':
         document.getElementById('mission-captions')?.classList.remove('mission-captions--active');
         break;
@@ -858,32 +993,65 @@
 
   // A small, explicit integration API lets teammates provide engineering data safely.
   // Calling it invalidates previously completed checks, preventing stale launch authorization.
-  const numericKeys = [
-    'totalMassKg', 'batteryChargePercent', 'powerBalanceWatts',
-    'heatShieldHealthPercent', 'fuelRemainingDeltaV',
-    'scienceDataCollectedMb', 'scienceDataTransmittedMb',
-    'reentryAngleDeg', 'blackoutMinutes', 'missionElapsedDays'
-  ];
+  const numericRanges = {
+    totalMassKg: [1, 1000000], batteryChargePercent: [0, 100],
+    powerBalanceWatts: [-1000000, 1000000], heatShieldHealthPercent: [0, 100],
+    fuelRemainingDeltaV: [0, 100000], scienceDataCollectedMb: [0, 100000000],
+    scienceDataTransmittedMb: [0, 100000000], reentryAngleDeg: [0, 90],
+    blackoutMinutes: [0, 1000000], missionElapsedDays: [0, 100000]
+  };
+  const numericKeys = Object.keys(numericRanges);
+  function validateSnapshot(partial, baseline, allowResult = false) {
+    if (!partial || typeof partial !== 'object' || Array.isArray(partial)) {
+      throw new TypeError('Spacecraft state must be a plain object.');
+    }
+    const next = { ...baseline };
+    for (const key of numericKeys) {
+      if (!Object.prototype.hasOwnProperty.call(partial, key)) continue;
+      const value = partial[key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new TypeError(`${key} must be a finite number.`);
+      }
+      const [min, max] = numericRanges[key];
+      if (value < min || value > max) {
+        throw new RangeError(`${key} must be between ${min} and ${max}.`);
+      }
+      next[key] = value;
+    }
+    for (const key of ['heatShieldInstalled', 'antennaActive']) {
+      if (Object.prototype.hasOwnProperty.call(partial, key)) {
+        if (typeof partial[key] !== 'boolean') throw new TypeError(`${key} must be a boolean.`);
+        next[key] = partial[key];
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(partial,'crewSafe')) {
+      if (!allowResult || (partial.crewSafe !== null && typeof partial.crewSafe !== 'boolean')) {
+        throw new TypeError('crewSafe can only be set in a completed mission result.');
+      }
+      next.crewSafe = partial.crewSafe;
+    }
+    if (next.scienceDataTransmittedMb > next.scienceDataCollectedMb) {
+      throw new RangeError('scienceDataTransmittedMb cannot exceed scienceDataCollectedMb.');
+    }
+    return next;
+  }
+  function rejectIntegration(error) {
+    state.ui.validationError = error.message;
+    invalidateDiagnostics(`INVALID INTEGRATION INPUT · ${error.message}`);
+    if (state.screen === 'checklist' || state.screen === 'hangar') render();
+  }
   window.ArtemisNicolas = Object.freeze({
     setShipSnapshot(partial) {
-      if (!partial || typeof partial !== 'object') throw new TypeError('Spacecraft state must be an object.');
-      const next = { ...state.ship };
-      for (const key of numericKeys) {
-        if (Object.prototype.hasOwnProperty.call(partial,key)) {
-          const value = Number(partial[key]);
-          if (!Number.isFinite(value)) throw new TypeError(`Invalid numeric value for ${key}`);
-          next[key] = value;
-        }
-      }
-      for (const key of ['heatShieldInstalled','antennaActive']) {
-        if (Object.prototype.hasOwnProperty.call(partial,key)) next[key] = Boolean(partial[key]);
-      }
+      let next;
+      try { next = validateSnapshot(partial, state.ship); }
+      catch (error) { rejectIntegration(error); throw error; }
       state.ship = next;
+      state.ui.validationError = null;
       invalidateDiagnostics('Spacecraft data updated. Please run diagnostics again.');
       if (state.screen === 'checklist' || state.screen === 'hangar') render();
       return checklist(state.ship);
     },
-    getReadiness() { return structuredClone(checklist(state.ship)); },
+    getReadiness() { const readiness = structuredClone(checklist(state.ship)); return {...readiness, approved: readiness.approved && !state.ui.validationError, validationError: state.ui.validationError}; },
     getReport() { return report() ? structuredClone(report()) : null; },
     openChecklist() { goto('checklist'); },
     openBriefing() { goto('briefing'); },
@@ -891,10 +1059,17 @@
       if (!payload || typeof payload !== 'object' || !payload.ship || !Array.isArray(payload.history)) {
         throw new TypeError('A completed mission must provide ship and history.');
       }
-      if (payload.phaseIndex !== 3) throw new Error('The debriefing requires all three mission phases.');
-      state.flight = { phaseIndex:3, ship:{ ...IDEAL_SHIP, ...payload.ship }, history:payload.history };
+      if (payload.phaseIndex !== 3 || payload.history.length !== 3) {
+        throw new Error('The debriefing requires three completed mission phases.');
+      }
+      let ship;
+      try { ship = validateSnapshot(payload.ship, IDEAL_SHIP, true); }
+      catch (error) { rejectIntegration(error); throw error; }
+      state.flight = { phaseIndex: 3, ship, history: payload.history };
+      state.ui.validationError = null;
       goto('debrief');
     }
+
   });
 
   // Update the baseline content without needing external scripts or network requests.

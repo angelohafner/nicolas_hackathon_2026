@@ -8,6 +8,10 @@ js = (source_dir / 'offline-enhancement.js').read_text(encoding='utf-8')
 assert source.count('</style>') == 1 and source.count('</script>') == 1
 assert '<html lang="pt-BR">' in source
 updated = source.replace('<html lang="pt-BR">', '<html lang="en-US">', 1)
+# The legacy range-input handler calls n(); use en-US formatting for dynamic values.
+old_format = "const n=value=>Math.round(value).toLocaleString('pt-BR');"
+assert old_format in updated
+updated = updated.replace(old_format, "const n=value=>Math.round(value).toLocaleString('en-US');", 1)
 # Replace labels baked into the static spacecraft illustration behind the UI.
 for old, new in [
     ('> LUA <span>384.400 km*</span>', '> MOON <span>384,400 km*</span>'),

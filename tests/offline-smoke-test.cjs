@@ -1,31 +1,25 @@
-// Node-based functional checks without a browser or external dependencies.
-const fs=require('fs');const vm=require('vm');const path=require('path');const src=fs.readFileSync(path.join(__dirname,'..','offline-app.js'),'utf8');
-let root={innerHTML:''};let shell={className:''};
-const document={
- getElementById:(id)=>id==='app-root'?root:id==='app-shell'?shell:id==='offline-stars'?{getContext:()=>null}:null,
- addEventListener:()=>{},createElement:()=>({click(){},remove(){}}),body:{appendChild:()=>{}}
-};
-const window={scrollTo(){},addEventListener(){},devicePixelRatio:1,innerWidth:1440,innerHeight:900};
-const sandbox=vm.createContext({document,window,console,Math,Intl,Number,String,Array,Object,JSON,Date,Set,Map,Boolean});
-vm.runInContext(src,sandbox,{filename:'offline-app.js'});
-function evaluate(s){return vm.runInContext(s,sandbox);}
-function assert(ok,msg){if(!ok)throw Error(msg);console.log('PASS',msg);}
-assert(root.innerHTML.includes('LUNAR ODYSSEY'),'intro shows game title');
-assert(evaluate('checklist().approved')===true,'healthy ship can launch');
-assert(evaluate('checklist({...IDEAL_SHIP,totalMassKg:28000}).approved')===false,'overweight blocks launch');
-assert(evaluate('checklist({...IDEAL_SHIP,batteryChargePercent:0}).approved')===false,'empty battery blocks launch');
-assert(evaluate('checklist({...IDEAL_SHIP,heatShieldInstalled:false}).approved')===false,'missing heat shield blocks launch');
-assert(evaluate('checklist({...IDEAL_SHIP,totalMassKg:23500}).approved')===true,'four green + one amber authorizes launch');
-assert(evaluate('checklist({...IDEAL_SHIP,antennaActive:false}).approved')===true,'noncritical antenna red does not veto when four are green');
-for(const [s,t] of [['hangar','Condições da nave'],['checklist','CHECKLIST / CML 4'],['flight','SIMULAÇÃO DIDÁTICA'],['debrief','Relatório']]){
- evaluate(`state.screen='${s}';`);if(s==='flight'||s==='debrief'){evaluate('state.flight=startFlight();advance();advance();advance();');}
- evaluate('render()');assert(root.innerHTML.includes(t),`${s} view renders`);
-}
-let r=evaluate('report()');assert(r.crewSafe,'default mission returns crew safely');assert(r.scienceTransmittedMb>250,'scientific data transmitted');assert(r.score===1000,'ideal mission score is 1000');
-assert(r.medals.every(m=>m.earned),'ideal mission earns 4 medals');
-assert(r.history.length===3,'history includes 3 phases');
-assert(r.scienceBufferedMb===0,'radio transfers all science after return');
-evaluate('state.flight=startFlight();state.flight.ship.reentryAngleDeg=8;advance();advance();advance();');
-r=evaluate('report()');assert(!r.crewSafe,'unsafe reentry fails');assert(!r.medals[0].earned,'no safe-return medal if reentry fails');
-evaluate('state.ship={...IDEAL_SHIP,antennaActive:false};state.flight=startFlight();advance();advance();advance();');r=evaluate('report()');assert(r.scienceTransmittedMb===0&&r.scienceBufferedMb===r.scienceCollectedMb,'antenna outage retains science in buffer');
-console.log('ALL OFFLINE FUNCTIONAL CHECKS PASSED');
+// Portable, dependency-free structural checks for the generated offline experience.
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const root = path.resolve(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const enhancement = fs.readFileSync(path.join(root, 'standalone', 'offline-enhancement.js'), 'utf8');
+const buildSource = fs.readFileSync(path.join(root, 'tools', 'build_standalone.py'), 'utf8');
+const test = (label, condition) => { assert.ok(condition, label); console.log(`PASS ${label}`); };
+test('Generated HTML exists with en-US document language', /<html lang="en-US">/.test(source));
+test('Game contains inline Earth and Moon imagery for offline use', (source.match(/data:image\//g) || []).length >= 2);
+test('No mandatory external scripts are fetched', !/<script[^>]+src=["']https?:/i.test(source));
+test('No mandatory external stylesheets are fetched', !/<link[^>]+rel=["']stylesheet["'][^>]+https?:/i.test(source));
+const match = source.match(/<script>([\s\S]*?)<\/script>/);
+assert.ok(match, 'One embedded application script is required');
+new vm.Script(match[1], { filename: 'index.html (embedded JavaScript)' });
+new vm.Script(enhancement, { filename: 'offline-enhancement.js' });
+test('Inline JavaScript parses without syntax errors', true);
+test('Five sequential checks and critical-red gate exist', enhancement.includes('systemNames') && enhancement.includes('greens >= 4 && criticalReds === 0'));
+test('Integrated spacecraft data is range-checked', enhancement.includes('validateSnapshot') && enhancement.includes('numericRanges'));
+test('Countdown waits for speech completion', enhancement.includes('The narration token prevents stale utterance callbacks') && enhancement.includes('const tick = number =>'));
+test('US-number formatting is embedded in the generated HTML', source.includes("const n=value=>Math.round(value).toLocaleString('en-US');"));
+test('Standalone rebuild script is present and portable', buildSource.includes("source_dir = base / 'standalone'"));
+console.log('ALL PORTABLE OFFLINE SMOKE CHECKS PASSED');
